@@ -1,1 +1,6 @@
 torch
+tokenizers
+datasets
+tqdm
+pathlib
+tensorboard

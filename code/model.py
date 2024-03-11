@@ -48,7 +48,7 @@ class LayerNormalization(nn.Module):
         mean = x.mean(dim = -1, keepdim=True)
         std = x.std(dim = -1, keepdim=True)
 
-        return (self.aplha * (x - mean) / torch.sqrt(std**2 + self.eps)) + self.bias
+        return (self.alpha * (x - mean) / torch.sqrt(std**2 + self.eps)) + self.bias
     
 class FeedForwardBlock(nn.Module):
     def __init__(self, d_model:int, d_ff:int, dropout:float) -> None:
@@ -60,7 +60,7 @@ class FeedForwardBlock(nn.Module):
         self.fc2 = nn.Linear(d_ff, d_model)
 
     def forward(self, x):
-        return self.fc2(self.dropout(nn.ReLU(self.fc1(x))))
+        return self.fc2(self.dropout(torch.relu(self.fc1(x))))
     
 class MultiHeadAttentionBlock(nn.Module):
     def __init__(self, d_model:int, h: int, dropout: float) -> None:
@@ -188,7 +188,7 @@ class Transformer(nn.Module):
         self.tgt_embedding = tgt_embedding
         self.src_pos = src_pos
         self.tgt_pos = tgt_pos
-        self.projection_layer = self.projection_layer
+        self.projection_layer = projection_layer
     
     def encode(self, src, src_mask):
         src = self.src_embedding(src)
@@ -196,7 +196,7 @@ class Transformer(nn.Module):
         return self.encoder(src, src_mask)
     
     def decode(self, encoder_output, src_mask, tgt, tgt_mask):
-        tgt = self.tgt_embed(tgt)
+        tgt = self.tgt_embedding(tgt)
         tgt = self.tgt_pos(tgt)
         return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
     
@@ -222,7 +222,7 @@ def build_transformer(src_vocab_size:int, tgt_vocab_size:int, src_seq_len:int, t
         decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
         decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
         feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
-        decoder_block = DecoderBlock(decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block)
+        decoder_block = DecoderBlock(decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block, dropout)
         decoder_blocks += [decoder_block]
 
     encoder = Encoder(nn.ModuleList(encoder_blocks))
