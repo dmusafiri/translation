@@ -1,6 +1,7 @@
 from pathlib import Path
 import torch
 import torch.nn as nn
+from torchmetrics.text import SacreBLEUScore
 from torch.utils.data import Dataset, DataLoader, random_split
 
 from datasets import load_dataset
@@ -15,6 +16,76 @@ from dataset import BilingualDataset, causal_mask
 from torch.utils.tensorboard import SummaryWriter
 
 from config import get_weights_file_path, get_config
+
+def greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+    sos_idx = tokenizer_tgt.token_to_id('[SOS]')
+    eos_idx = tokenizer_tgt.token_to_id('[EOS]')
+
+    encoder_output = model.encode(encoder_input, encoder_mask)
+
+    decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(encoder_input).to(device)
+    while True:
+        if decoder_input.size(1) == max_len:
+            break
+
+        decoder_mask = causal_mask(decoder_input.size(1)).type_as(encoder_mask).to(device)
+
+        output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask)
+
+        probabilites = model.project(output[:, -1])
+        _, next_word = torch.max(probabilites, dim=1)
+        decoder_input = torch.cat([decoder_input, torch.empty(1, 1).type_as(encoder_input).fill_(next_word.item()).to(device)], dim=1)
+
+        if next_word == eos_idx:
+            break
+    
+    return decoder_input.squeeze(0)
+
+
+
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=2):
+    model.eval()
+    count = 0
+
+    source_texts = []
+    expected = []
+    predicted = []
+
+    console_width = 80
+
+    with torch.no_grad():
+        for batch in validation_ds:
+            count += 1
+            encoder_input = batch['encoder_input'].to(device)
+            encoder_mask = batch['encoder_mask'].to(device)
+
+            assert encoder_input.size(0) == 1, "Batch size must be 1 for validation"
+
+            model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+
+            source_text = batch['src_text'][0]
+            target_text = batch['tgt_text'][0]
+            model_out_text = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+
+            source_texts += [source_text]
+            expected += [target_text]
+            predicted += [model_out_text]
+
+            print_msg('-'*console_width)
+            print(f'SOURCE: {source_text}')
+            print(f'EXPECTED: {target_text}')
+            print(f'PREDICTED: {model_out_text}')
+
+            if count == num_examples:
+                break
+
+    if writer:
+        # Compute the BLEU metric
+        metric = SacreBLEUScore()
+        bleu = metric(predicted, expected)
+        writer.add_scalar('validation BLEU', bleu, global_step)
+        writer.flush()
+
 
 def get_all_setences(ds, lang):
     for item in ds:
@@ -96,10 +167,10 @@ def train_model(config):
     for epoch in range(initial_epoch, config['num_epochs']):
         torch.cuda.empty_cache()
         model.cuda()
-        model.train()
 
         batch_iterator = tqdm(train_dataloader, desc=f"Epoch {epoch:02d}/{config['num_epochs']}")
         for batch in batch_iterator:
+            model.train()
             encoder_input = batch["encoder_input"].to(device)
             decoder_input = batch["decoder_input"].to(device)
             encoder_mask = batch["encoder_mask"].to(device)
@@ -123,6 +194,8 @@ def train_model(config):
             optimizer.zero_grad()
 
             global_step += 1
+        
+        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda x: batch_iterator.write(x), global_step, writer)
 
         model_filename = get_weights_file_path(config, f'{epoch:02d}')
         torch.save({

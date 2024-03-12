@@ -4,3 +4,4 @@ datasets
 tqdm
 pathlib
 tensorboard
+torchmetrics
